@@ -1,4 +1,10 @@
-from asyncio import TimeoutError, create_subprocess_exec, gather, sleep
+from asyncio import (
+    TimeoutError,
+    create_subprocess_exec,
+    gather,
+    open_connection,
+    sleep,
+)
 from contextlib import suppress
 from inspect import iscoroutinefunction
 from pathlib import Path
@@ -48,6 +54,31 @@ async def _connect_aria2(retries=5, delay=2):
             await sleep(delay)
 
 
+async def _wait_for_port(host="127.0.0.1", port=8090, retries=25, delay=1):
+    for i in range(retries):
+        try:
+            _, writer = await open_connection(host, port)
+            writer.close()
+            with suppress(Exception):
+                await writer.wait_closed()
+            return True
+        except (OSError, ConnectionRefusedError):
+            if i == retries - 1:
+                return False
+            await sleep(delay)
+    return False
+
+
+async def _connect_qbittorrent(url="http://127.0.0.1:8090/api/v2/", retries=5, delay=2):
+    for i in range(retries):
+        try:
+            return await create_client(url)
+        except (ClientError, ConnectionRefusedError, TimeoutError, Exception) as e:
+            if i == retries - 1:
+                raise
+            await sleep(delay)
+
+
 class TorrentManager:
     aria2 = None
     qbittorrent = None
@@ -65,13 +96,40 @@ class TorrentManager:
                 return
 
             proc = await create_subprocess_exec(
-                BinConfig.QBIT_NAME, "-d", f"--profile={getcwd()}/configs/qbittorrent"
+                BinConfig.QBIT_NAME,
+                "-d",
+                f"--profile={getcwd()}/configs/qbittorrent",
+                "--webui-port=8090",
+                "--confirm-legal-notice",
             )
-            await sleep(2)
-            LOGGER.info(f"qBittorrent started (PID: {proc.pid})")
+            LOGGER.info(
+                f"qBittorrent process spawned (PID: {proc.pid}), waiting for port 8090..."
+            )
 
-            cls.qbittorrent = await create_client("http://localhost:8090/api/v2/")
+            is_open = await _wait_for_port("127.0.0.1", 8090, retries=25, delay=1)
+            if not is_open:
+                LOGGER.warning(
+                    "Port 8090 not reachable on 127.0.0.1, checking localhost..."
+                )
+                is_open = await _wait_for_port("localhost", 8090, retries=5, delay=1)
+
+            if not is_open:
+                LOGGER.error("qBittorrent port 8090 failed to open in time.")
+
+            try:
+                cls.qbittorrent = await _connect_qbittorrent(
+                    "http://127.0.0.1:8090/api/v2/"
+                )
+            except Exception:
+                LOGGER.warning(
+                    "Connection via 127.0.0.1 failed, falling back to localhost..."
+                )
+                cls.qbittorrent = await _connect_qbittorrent(
+                    "http://localhost:8090/api/v2/"
+                )
+
             cls.qbittorrent = wrap_with_retry(cls.qbittorrent)
+            LOGGER.info("qBittorrent initialized successfully.")
 
         except Exception as e:
             LOGGER.error(f"Error during initialization: {e}")
