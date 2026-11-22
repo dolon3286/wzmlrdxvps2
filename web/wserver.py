@@ -168,7 +168,7 @@ sabnzbd_client = SabnzbdClient(
 )
 SERVICES = {
     "nzb": {"url": "http://localhost:8070/", "password": _service_pwd("sabnzbd")},
-    "qbit": {"url": "http://localhost:8090", "password": _service_pwd("qbit")},
+    "qbit": {"url": "http://127.0.0.1:8090", "password": _service_pwd("qbit")},
 }
 
 
@@ -176,7 +176,10 @@ SERVICES = {
 async def lifespan(app: FastAPI):
     global aria2, qbittorrent
     aria2 = Aria2HttpClient("http://localhost:6800/jsonrpc")
-    qbittorrent = await create_client("http://localhost:8090/api/v2/")
+    try:
+        qbittorrent = await create_client("http://127.0.0.1:8090/api/v2/")
+    except Exception:
+        qbittorrent = await create_client("http://localhost:8090/api/v2/")
     yield
     await aria2.close()
     await qbittorrent.close()
